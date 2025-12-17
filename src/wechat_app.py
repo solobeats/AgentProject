@@ -8,7 +8,12 @@ from langchain_core.runnables import RunnableConfig
 
 # --- 项目初始化 ---
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.rag_chain import create_rag_chain, get_deepseek_llm
+from src.rag_chain import (
+    create_rag_chain, 
+    get_deepseek_llm, 
+    get_zhipu_llm, 
+    invoke_multimodal_chain
+)
 
 load_dotenv()
 
@@ -17,6 +22,10 @@ app = Flask(__name__)
 # 客服消息接口的 URL，需要从平台获取，这里使用文档中的示例
 # 在真实部署时，您可能需要将其配置为环境变量
 CUSTOMER_SERVICE_API_URL = "http://localhost:8000/send_custom_message" 
+
+# 用于存储每个用户会话状态的全局字典
+# key: user_id, value: {"mode": "role_play", "prompt_template": "..."}
+user_session_states = {}
 
 # --- RAG 链预加载 ---
 print("正在初始化微信后端服务...")
@@ -63,20 +72,119 @@ def send_custom_message(user_id: str, content: str, msg_type: str = "text"):
     except requests.exceptions.RequestException as e:
         print(f"错误：调用客服消息 API 失败: {e}")
 
-def process_request_in_background(user_id: str, question: str, msg_type: str):
+def process_request_in_background(user_id: str, content: str, msg_type: str):
     """在后台线程中处理用户的请求并异步回复。"""
     print(f"后台线程开始处理用户 [{user_id}] 的请求...")
-    
-    # 注意：图片消息处理逻辑需要在这里集成
+    answer = ""
+
     if msg_type == "image":
-        # 这里应该调用我们之前实现的多模态逻辑
-        # 由于简化，我们暂时只回复文本
-        answer = "图片消息处理功能正在集成中。"
-    else: # 默认为 text
-        config = RunnableConfig(configurable={"session_id": user_id})
+        print("检测到图片消息，正在执行复杂多模态分析流程...")
+        image_url = content
+        
+        # 1. 初始化多模态 LLM
+        multimodal_llm = get_zhipu_llm(is_multimodal=True)
+        if not multimodal_llm:
+            answer = "抱歉，多模态模型初始化失败，请检查ZhipuAI API Key。"
+            send_custom_message(user_id, answer)
+            return
+
         try:
-            response = rag_chain_with_history.invoke({"question": question}, config=config)
-            answer = response
+            # 2. [步骤1/3] 图片描述阶段
+            print("[步骤 1/3] 正在识别和描述图片内容...")
+            desc_prompt = "你是一个专业的图像分析师。请详细、客观地描述这幅图像的内容，重点描述其主要物体、场景和风格。"
+            image_description = invoke_multimodal_chain(multimodal_llm, image_url, desc_prompt)
+            print(f"图片描述: {image_description[:100]}...")
+
+            # 3. [步骤2/3] 文本检索阶段
+            print("[步骤 2/3] 正在基于图片描述检索相关知识...")
+            # 使用图片描述去文本知识库中检索
+            config = RunnableConfig(configurable={"session_id": f"session_image_{user_id}"})
+            retrieved_context = rag_chain_with_history.invoke({"question": image_description}, config=config)
+            print("相关知识检索完成。")
+
+            # 4. [步骤3/3] 最终回答生成阶段
+            print("[步骤 3/3] 正在结合图文信息生成最终回答...")
+            final_prompt = f"""
+            你是一个知识渊博的《三体》专家。请结合以下所有信息，对用户提供的图片进行全面分析和解读。
+
+            ---
+            分析任务：
+            - 原始图片内容描述: {image_description}
+            - 从《三体》知识库中检索到的相关背景知识: {retrieved_context}
+            ---
+
+            请根据以上所有信息，给出一个关于这张图片的、结合了《三体》知识的、全面而深刻的分析。
+            """
+            answer = invoke_multimodal_chain(multimodal_llm, image_url, final_prompt)
+
+        except Exception as e:
+            print(f"后台处理复杂多模态链时出错: {e}")
+            answer = "抱歉，分析图片时遇到了内部错误。"
+
+    else:  # 默认为 text
+        question = content
+        config = RunnableConfig(configurable={"session_id": user_id})
+        
+        try:
+            # --- 步骤1: 检查是否为模式切换命令 ---
+            is_command = False
+            if question.startswith("扮演：") or question.startswith("扮演:"):
+                is_command = True
+                char_name = question.split("：", 1)[-1].split(":", 1)[-1].strip()
+                print(f"切换到角色扮演模式，角色：{char_name}")
+                
+                ROLE_PLAY_TEMPLATE = f"""
+                你正在扮演科幻小说《三体》中的角色：【{char_name}】。
+                请严格以【{char_name}】的口吻、性格、知识和视角来回答问题。
+                在回答时，请自然地融入角色的特点，不要暴露你是一个AI模型。
+
+                对话历史: {{chat_history}}
+                上下文: {{context}}
+                问题: {{question}}
+                【{char_name}】的回答:
+                """
+                user_session_states[user_id] = {"mode": "role_play", "prompt_template": ROLE_PLAY_TEMPLATE}
+                answer = f"模式已切换：我现在是【{char_name}】。你可以开始与我对话了。"
+
+            elif question.startswith("分析：") or question.startswith("分析:"):
+                # 分析模式是一次性的，不需要保存状态
+                is_command = True
+                decision_question = question.split("：", 1)[-1].split(":", 1)[-1].strip()
+                print(f"执行一次性决策模拟，问题：{decision_question}")
+
+                DECISION_TEMPLATE = """
+                你是一位冷静、客观的《三体》世界战略分析家。
+                请根据下面提供的背景资料，深入、多角度地分析用户提出的决策问题。
+                你的分析报告需要结构清晰，至少包含：核心问题、正反论据、关键影响因素和最终结论。
+
+                背景资料: {context}
+                决策问题: {question}
+                战略分析报告:
+                """
+                decision_rag_chain = create_rag_chain(llm, prompt_template=DECISION_TEMPLATE)
+                answer = decision_rag_chain.invoke({"question": decision_question}, config=config)
+
+            elif question in ["重置模式", "普通模式"]:
+                is_command = True
+                if user_id in user_session_states:
+                    del user_session_states[user_id]
+                answer = "模式已重置为普通问答模式。"
+
+            # --- 步骤2: 如果不是命令，则根据当前状态处理 ---
+            if not is_command:
+                current_state = user_session_states.get(user_id)
+                
+                if current_state and current_state["mode"] == "role_play":
+                    # 用户处于角色扮演模式
+                    print(f"用户 [{user_id}] 处于角色扮演模式，使用专用链...")
+                    prompt_template = current_state["prompt_template"]
+                    dynamic_chain = create_rag_chain(llm, prompt_template=prompt_template)
+                    answer = dynamic_chain.invoke({"question": question}, config=config)
+                else:
+                    # 默认使用普通问答模式
+                    print(f"用户 [{user_id}] 处于普通模式，使用默认链...")
+                    answer = rag_chain_with_history.invoke({"question": question}, config=config)
+
         except Exception as e:
             print(f"后台处理 RAG 链时出错: {e}")
             answer = "抱歉，处理您的问题时遇到了内部错误。"

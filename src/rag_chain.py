@@ -113,4 +113,25 @@ def create_rag_chain(llm, prompt_template: str = DEFAULT_PROMPT_TEMPLATE):
     
     return chain_with_history
 
+def invoke_multimodal_chain(llm, image_url: str, question: str) -> str:
+    """
+    调用多模态 LLM (如 GLM-4V) 来处理结合了图片和文本的问题。
+    
+    参数:
+    - llm: 一个已经初始化的多模态聊天模型实例。
+    - image_url: 指向图片的公开可访问 URL。
+    - question: 关于图片的文本问题或提示。
+    
+    返回:
+    - LLM 生成的文本回答。
+    """
+    msg = HumanMessage(
+        content=[
+            {"type": "text", "text": question},
+            {"type": "image_url", "image_url": {"url": image_url}},
+        ]
+    )
+    response = llm.invoke([msg])
+    return response.content
+
 # (移除主执行块)
