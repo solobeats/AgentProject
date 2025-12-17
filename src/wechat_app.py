@@ -21,7 +21,7 @@ load_dotenv()
 app = Flask(__name__)
 # 客服消息接口的 URL，需要从平台获取，这里使用文档中的示例
 # 在真实部署时，您可能需要将其配置为环境变量
-CUSTOMER_SERVICE_API_URL = "http://localhost:8000/send_custom_message" 
+CUSTOMER_SERVICE_API_URL = "http://1.95.125.201/wx" 
 
 # 用于存储每个用户会话状态的全局字典
 # key: user_id, value: {"mode": "role_play", "prompt_template": "..."}
