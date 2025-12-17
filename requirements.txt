@@ -1,0 +1,12 @@
+flask
+langchain
+langchain-community
+sentence-transformers
+faiss-cpu
+lxml
+python-dotenv
+langchain-deepseek
+prompt-toolkit
+Pillow
+PyJWT
+requests
