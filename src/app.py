@@ -55,7 +55,7 @@ def role_play_mode(llm):
         print("文本模型未初始化，无法进入此模式。")
         return
     print("\n--- 进入角色扮演模式 ---")
-    characters = ["罗辑", "叶文洁", "史强", "智子", "章北海"]
+    characters = ["罗辑", "叶文洁", "史强", "智子", "章北海","程心"]
     completer = WordCompleter(characters, ignore_case=True)
     
     while True:

@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import threading
 import requests
 from flask import Flask, request, Response
@@ -19,9 +20,8 @@ load_dotenv()
 
 # --- 全局变量和配置 ---
 app = Flask(__name__)
-# 客服消息接口的 URL，需要从平台获取，这里使用文档中的示例
-# 在真实部署时，您可能需要将其配置为环境变量
-CUSTOMER_SERVICE_API_URL = "http://1.95.125.201/wx" 
+# 客服消息接口的 URL，根据老师提供的 demo.py 进行修正
+CUSTOMER_SERVICE_API_URL = "http://1.95.125.201/send_custom_message"
 
 # 用于存储每个用户会话状态的全局字典
 # key: user_id, value: {"mode": "role_play", "prompt_template": "..."}
@@ -36,6 +36,7 @@ if not llm:
 PROMPT_TEMPLATE = """
 你是一个关于科幻小说《三体》的知识问答助手。
 请根据下面提供的上下文和对话历史来连贯地回答问题。
+**你的回答需要简明扼要，概括核心信息，总长度不要超过200字。**
 如果你在上下文中找不到答案，就说你不知道。
 
 对话历史:
@@ -66,7 +67,13 @@ def send_custom_message(user_id: str, content: str, msg_type: str = "text"):
     }
     try:
         print(f"正在向用户 [{user_id}] 发送异步客服消息...")
-        res = requests.post(CUSTOMER_SERVICE_API_URL, json=payload, timeout=5)
+        # 根据老师的 demo.py 修正数据发送方式
+        res = requests.post(
+            CUSTOMER_SERVICE_API_URL,
+            data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+            headers={"Content-Type": "application/json"},
+            timeout=10
+        )
         res.raise_for_status() # 如果请求失败则抛出异常
         print(f"异步消息发送成功: {res.json()}")
     except requests.exceptions.RequestException as e:
@@ -137,6 +144,7 @@ def process_request_in_background(user_id: str, content: str, msg_type: str):
                 你正在扮演科幻小说《三体》中的角色：【{char_name}】。
                 请严格以【{char_name}】的口吻、性格、知识和视角来回答问题。
                 在回答时，请自然地融入角色的特点，不要暴露你是一个AI模型。
+                
 
                 对话历史: {{chat_history}}
                 上下文: {{context}}
@@ -154,12 +162,12 @@ def process_request_in_background(user_id: str, content: str, msg_type: str):
 
                 DECISION_TEMPLATE = """
                 你是一位冷静、客观的《三体》世界战略分析家。
-                请根据下面提供的背景资料，深入、多角度地分析用户提出的决策问题。
-                你的分析报告需要结构清晰，至少包含：核心问题、正反论据、关键影响因素和最终结论。
+                请根据下面提供的背景资料，**简明扼要地**分析用户提出的决策问题。
+                你的分析需要**概括核心要点**，并给出一个**不超过200字**的总结性结论。
 
                 背景资料: {context}
                 决策问题: {question}
-                战略分析报告:
+                精简战略分析:
                 """
                 decision_rag_chain = create_rag_chain(llm, prompt_template=DECISION_TEMPLATE)
                 answer = decision_rag_chain.invoke({"question": decision_question}, config=config)
